@@ -1,0 +1,2 @@
+namespace Kuvik.ONDC.Api.Middleware;
+public sealed class RawBodyMiddleware(RequestDelegate next) { public async Task Invoke(HttpContext context) { if(context.Request.ContentLength is > 0 && context.Request.Method=="POST") { context.Request.EnableBuffering(); using var reader=new StreamReader(context.Request.Body,leaveOpen:true); context.Items["OndcRawBody"]=await reader.ReadToEndAsync(context.RequestAborted); context.Request.Body.Position=0; } await next(context); } }

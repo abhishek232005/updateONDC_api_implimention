@@ -1,0 +1,22 @@
+using System.Text.Json;
+using Kuvik.ONDC.Api.Configuration;
+using Kuvik.ONDC.Api.Models.Common;
+using Kuvik.ONDC.Api.Services;
+using Kuvik.ONDC.Api.Services.Signature;
+using Kuvik.ONDC.Api.Services.Transaction;
+using Kuvik.ONDC.Api.Services.Validation;
+using Microsoft.Extensions.Options;
+using Org.BouncyCastle.Crypto.Parameters;
+
+namespace Kuvik.ONDC.Tests;
+public sealed class OndcCoreTests {
+ static OndcOptions TestOptions(byte[]? seed=null) { seed ??= Enumerable.Range(1,32).Select(x=>(byte)x).ToArray(); var privateKey=new Ed25519PrivateKeyParameters(seed,0); return new OndcOptions { SubscriberId="kuvikloans.com",SubscriberUrl="https://bap.kuvikloans.com",SigningKeyId="key-1",SigningPrivateKey=Convert.ToBase64String(seed),EncryptionKey=Convert.ToBase64String(Enumerable.Repeat((byte)7,32).ToArray()),TrustedSubscriberKeys=new Dictionary<string,string> { ["kuvikloans.com|key-1"]=Convert.ToBase64String(privateKey.GeneratePublicKey().GetEncoded()) } }; }
+ [Fact] public void Context_builder_keeps_transaction_and_changes_message() { var service=new OndcContextService(Options.Create(TestOptions())); var a=service.Create("search",Guid.NewGuid().ToString()); var b=service.Create("select",a.TransactionId); Assert.Equal(a.TransactionId,b.TransactionId); Assert.NotEqual(a.MessageId,b.MessageId); Assert.Equal("ONDC:FIS12",a.Domain); }
+ [Fact] public void Signature_round_trip_verifies_exact_body() { var o=TestOptions(); var keys=new LocalMockKeyStore(); var service=new OndcSignatureService(Options.Create(o),new ConfigurationSubscriberKeyResolver(Options.Create(o),keys),keys); var body="{\"context\":{\"x\":1}}"; var header=service.CreateAuthorization(body); service.Verify(body,header); Assert.StartsWith("Signature keyId=",header); }
+ [Fact] public void Signature_rejects_tampered_body() { var o=TestOptions(); var keys=new LocalMockKeyStore(); var producer=new OndcSignatureService(Options.Create(o),new ConfigurationSubscriberKeyResolver(Options.Create(o),keys),keys); var header=producer.CreateAuthorization("{\"a\":1}"); var verifier=new OndcSignatureService(Options.Create(o),new ConfigurationSubscriberKeyResolver(Options.Create(o),keys),keys); Assert.Throws<UnauthorizedAccessException>(()=>verifier.Verify("{\"a\":2}",header)); }
+ [Fact] public void Encryption_round_trip() { var s=new OndcEncryptionService(Options.Create(TestOptions())); var encrypted=s.Encrypt("sensitive application data"); Assert.Equal("sensitive application data",s.Decrypt(encrypted)); }
+ [Fact] public void Search_validator_requires_personal_loan() { var validator=new Fis12Validator(Options.Create(TestOptions())); var envelope=Envelope("search","{\"intent\":{\"category\":{\"descriptor\":{\"code\":\"PERSONAL_LOAN\"}}}}"); validator.Validate(envelope,"search"); var invalid=Envelope("search","{}"); Assert.Throws<ArgumentException>(()=>validator.Validate(invalid,"search")); }
+ static OndcEnvelope Envelope(string action,string message) => new() { Context=new OndcContext { Domain="ONDC:FIS12",Version="2.0.3",Action=action,BapId="kuvikloans.com",BapUri="https://bap.kuvikloans.com",TransactionId=Guid.NewGuid().ToString(),MessageId=Guid.NewGuid().ToString(),Timestamp=DateTimeOffset.UtcNow,Location=new OndcLocation { Country=new OndcCode { Code="IND" },City=new OndcCode { Code="*" } } },Message=JsonDocument.Parse(message).RootElement.Clone() };
+}
+public sealed class TransactionTests { [Fact] public async Task Invalid_transition_is_rejected() { var repo=new MemoryRepo(); var service=new TransactionService(repo); var e=Build("search"); await service.RecordAsync(e,TransactionState.SearchInitiated,CancellationToken.None); await Assert.ThrowsAsync<InvalidOperationException>(()=>service.RecordAsync(Build("on_select",e.Context.TransactionId),TransactionState.SelectReceived,CancellationToken.None)); } static OndcEnvelope Build(string action,string? id=null) => new() { Context=new OndcContext { Action=action,TransactionId=id??Guid.NewGuid().ToString(),MessageId=Guid.NewGuid().ToString() },Message=JsonDocument.Parse("{}").RootElement.Clone() }; sealed class MemoryRepo : ITransactionRepository { readonly Dictionary<string,OndcTransaction> all=new(); public Task<OndcTransaction?> GetAsync(string id,CancellationToken ct)=>Task.FromResult(all.GetValueOrDefault(id)); public Task AddAsync(OndcTransaction tx,CancellationToken ct) { all.Add(tx.TransactionId,tx); return Task.CompletedTask; } public Task SaveAsync(CancellationToken ct)=>Task.CompletedTask; } }
+

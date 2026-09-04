@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Kuvik.ONDC.Api/Kuvik.ONDC.Api.csproj" />
+  <Project Path="Kuvik.ONDC.Tests/Kuvik.ONDC.Tests.csproj" />
+</Solution>

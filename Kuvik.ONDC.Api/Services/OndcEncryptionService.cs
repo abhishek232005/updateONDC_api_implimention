@@ -1,0 +1,8 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using Kuvik.ONDC.Api.Configuration;
+using Microsoft.Extensions.Options;
+namespace Kuvik.ONDC.Api.Services;
+public interface IOndcEncryptionService { string Encrypt(string plaintext); string Decrypt(string envelope); }
+public sealed class OndcEncryptionService(IOptions<OndcOptions> options) : IOndcEncryptionService { public string Encrypt(string plaintext) { var key=Key(); var nonce=RandomNumberGenerator.GetBytes(12); var plain=Encoding.UTF8.GetBytes(plaintext); var cipher=new byte[plain.Length]; var tag=new byte[16]; using var aes=new AesGcm(key,16); aes.Encrypt(nonce,plain,cipher,tag); return JsonSerializer.Serialize(new { nonce=Convert.ToBase64String(nonce), ciphertext=Convert.ToBase64String(cipher), tag=Convert.ToBase64String(tag) }); } public string Decrypt(string envelope) { try { using var doc=JsonDocument.Parse(envelope); var root=doc.RootElement; var nonce=Convert.FromBase64String(root.GetProperty("nonce").GetString()!); var cipher=Convert.FromBase64String(root.GetProperty("ciphertext").GetString()!); var tag=Convert.FromBase64String(root.GetProperty("tag").GetString()!); var plain=new byte[cipher.Length]; using var aes=new AesGcm(Key(),16); aes.Decrypt(nonce,cipher,tag,plain); return Encoding.UTF8.GetString(plain); } catch(CryptographicException) { throw new InvalidOperationException("Encrypted payload authentication failed."); } } byte[] Key() { var value=options.Value.EncryptionKey; if(String.IsNullOrWhiteSpace(value)) throw new InvalidOperationException("Encryption key is not configured."); var key=Convert.FromBase64String(value); if(key.Length!=32) throw new InvalidOperationException("Encryption key must be a 32-byte base64 key."); return key; } }

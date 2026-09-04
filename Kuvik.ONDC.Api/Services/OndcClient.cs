@@ -1,0 +1,9 @@
+using System.Net.Http.Headers;
+using System.Text;
+using Kuvik.ONDC.Api.Configuration;
+using Kuvik.ONDC.Api.Models.Common;
+using Kuvik.ONDC.Api.Services.Signature;
+using Microsoft.Extensions.Options;
+namespace Kuvik.ONDC.Api.Services;
+public interface IOndcClient { Task ForwardAsync(OndcEnvelope request,string rawBody,CancellationToken ct); }
+ public sealed class OndcClient(HttpClient client, IOndcSignatureService signature, IOptions<OndcOptions> options, ILogger<OndcClient> log) : IOndcClient { public async Task ForwardAsync(OndcEnvelope request,string raw,CancellationToken ct) { var o=options.Value; var baseUrl=request.Context.Action=="search" ? o.ApiBaseUrl : request.Context.BppUri; if(!Uri.TryCreate(baseUrl,UriKind.Absolute,out var endpoint)) throw new InvalidOperationException("A valid ONDC target endpoint is required."); var localHttpAllowed=o.LocalMock.Enabled && endpoint.Host.Equals("localhost",StringComparison.OrdinalIgnoreCase) && endpoint.Scheme==Uri.UriSchemeHttp; if(endpoint.Scheme!=Uri.UriSchemeHttps && !localHttpAllowed) throw new InvalidOperationException("A HTTPS ONDC target endpoint is required."); endpoint=new Uri(endpoint,$"{request.Context.Action.TrimStart('/')}"); using var message=new HttpRequestMessage(HttpMethod.Post,endpoint) { Content=new StringContent(raw,Encoding.UTF8,"application/json") }; message.Headers.Authorization=AuthenticationHeaderValue.Parse(signature.CreateAuthorization(raw)); using var response=await client.SendAsync(message,HttpCompletionOption.ResponseHeadersRead,ct); if(!response.IsSuccessStatusCode) { log.LogWarning("ONDC downstream returned HTTP {StatusCode} for {Action} {TransactionId}",response.StatusCode,request.Context.Action,request.Context.TransactionId); throw new HttpRequestException("ONDC downstream request was not accepted.",null,response.StatusCode); } } }
